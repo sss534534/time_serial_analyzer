@@ -7,9 +7,13 @@ import json
 from datetime import datetime
 from statsmodels.tsa.arima.model import ARIMA
 from sklearn.impute import SimpleImputer
-from sklearn.preprocessing import MinMaxScaler
+from sklearn.preprocessing import MinMaxScaler, StandardScaler
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score, mean_absolute_percentage_error
 from typing import Dict, List, Tuple, Any
+import warnings
+
+# 导入XGBoost
+from xgboost import XGBRegressor
 
 # 尝试导入tensorflow和keras，如果安装了则使用LSTM模型
 try:
@@ -188,6 +192,29 @@ class StockPricePredictor:
             self.data[self.price_column + '_scaled'] = scaler.fit_transform(self.data[[self.price_column]]).flatten()
         
         return self
+    
+    def _create_feature_engineering(self, data, look_back: int = 10):
+        """
+        为时间序列数据创建特征工程
+        
+        参数:
+        data: pd.DataFrame - 原始数据
+        look_back: int - 回溯窗口大小
+        
+        返回:
+        X, y: tuple - 特征和目标变量
+        """
+        X, y = [], []
+        values = data[self.price_column].values
+        
+        for i in range(look_back, len(values)):
+            # 创建特征：过去look_back个时间点的价格
+            feature = values[i-look_back:i]
+            target = values[i]
+            X.append(feature)
+            y.append(target)
+        
+        return np.array(X), np.array(y)
     
     def train_test_split(self, test_size: float = 0.2):
         """
@@ -545,6 +572,96 @@ class StockPricePredictor:
             'model_name': model_name
         }
     
+    def xgboost_forecast(self, look_back: int = 10, test_size: float = 0.2, n_estimators: int = 100,
+                         learning_rate: float = 0.1, max_depth: int = 3, plot_forecast: bool = True):
+        """
+        使用XGBoost进行股价预测
+        
+        参数:
+        look_back: int - 回溯窗口大小（用于特征工程）
+        test_size: float - 测试集比例
+        n_estimators: int - XGBoost树的数量
+        learning_rate: float - 学习率
+        max_depth: int - 树的最大深度
+        plot_forecast: bool - 是否绘制预测图
+        
+        返回:
+        dict - 包含模型、预测结果和评估指标的字典
+        """
+        if self.data is None:
+            raise ValueError("请先加载数据")
+        
+        # 创建特征工程
+        X, y = self._create_feature_engineering(self.data, look_back=look_back)
+        
+        # 划分训练集和测试集
+        split_index = int(len(X) * (1 - test_size))
+        X_train, X_test = X[:split_index], X[split_index:]
+        y_train, y_test = y[:split_index], y[split_index:]
+        
+        # 构建XGBoost模型
+        model = XGBRegressor(
+            n_estimators=n_estimators,
+            learning_rate=learning_rate,
+            max_depth=max_depth,
+            objective='reg:squarederror',
+            random_state=42
+        )
+        
+        # 训练模型
+        model.fit(X_train, y_train)
+        
+        # 进行预测
+        train_predict = model.predict(X_train)
+        test_predict = model.predict(X_test)
+        
+        # 计算指标
+        model_name = f'xgboost_{look_back}_{n_estimators}_{max_depth}'
+        metrics = self.calculate_metrics(y_test, test_predict, model_name=model_name)
+        
+        # 保存模型
+        self.models[model_name] = {
+            'model': model,
+            'look_back': look_back
+        }
+        
+        # 绘制预测图
+        if plot_forecast:
+            plt.figure(figsize=(12, 6))
+            
+            # 绘制原始数据
+            plt.plot(self.data.index, self.data[self.price_column], label='原始数据')
+            
+            # 绘制训练集预测
+            train_predict_plot = np.full_like(self.data[self.price_column].values, np.nan)
+            train_predict_plot[look_back:look_back+len(train_predict)] = train_predict
+            plt.plot(self.data.index, train_predict_plot, label='训练集预测')
+            
+            # 绘制测试集预测
+            test_predict_plot = np.full_like(self.data[self.price_column].values, np.nan)
+            test_start_idx = look_back + len(train_predict)
+            test_predict_plot[test_start_idx:test_start_idx + len(test_predict)] = test_predict
+            plt.plot(self.data.index, test_predict_plot, label='测试集预测', color='red')
+            
+            plt.title('XGBoost预测结果')
+            plt.xlabel(self.time_column)
+            plt.ylabel(self.price_column)
+            plt.legend()
+            plt.grid(True, alpha=0.3)
+            plt.tight_layout()
+        plt.show()
+        
+        return {
+            'model': model,
+            'look_back': look_back,
+            'train_predict': train_predict,
+            'test_predict': test_predict,
+            'Y_train': y_train,
+            'Y_test': y_test,
+            'metrics': metrics,
+            'model_name': model_name
+        }
+    
     def calculate_metrics(self, y_true, y_pred, model_name: str = 'model'):
         """
         计算预测的评估指标
@@ -611,8 +728,10 @@ class StockPricePredictor:
                 result = self.arima_forecast(**params)
             elif algo_type == 'lstm' and TENSORFLOW_AVAILABLE:
                 result = self.lstm_forecast(**params)
+            elif algo_type == 'xgboost':
+                result = self.xgboost_forecast(**params)
             else:
-                print(f"不支持的算法类型或TensorFlow未安装: {algo_type}")
+                print(f"不支持的算法类型: {algo_type}")
                 continue
             
             if result:
@@ -705,6 +824,27 @@ class StockPricePredictor:
             
             # 反归一化
             forecast = scaler.inverse_transform(np.array(forecast).reshape(-1, 1)).flatten()
+        
+        elif self.best_model_name.startswith('xgboost'):
+            # XGBoost模型
+            model = self.best_model['model']
+            look_back = self.best_model['look_back']
+            
+            # 获取最后look_back个数据点
+            last_values = self.data[self.price_column].tail(look_back).values
+            
+            # 预测未来steps步
+            forecast = []
+            current_input = last_values.reshape(1, look_back)
+            
+            for _ in range(steps):
+                next_value = model.predict(current_input)
+                forecast.append(next_value[0])
+                
+                # 更新输入序列
+                current_input = np.append(current_input[:, 1:], next_value.reshape(1, 1), axis=1)
+            
+            forecast = np.array(forecast)
         
         else:
             raise ValueError(f"不支持的模型类型: {self.best_model_name}")

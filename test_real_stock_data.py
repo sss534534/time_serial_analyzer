@@ -70,6 +70,26 @@ def test_real_stock_data():
                 'params': {'auto_tune': True, 'plot_forecast': True}
             },
             {
+                'algo': 'xgboost',
+                'params': {
+                    'look_back': 10, 
+                    'n_estimators': 100,
+                    'max_depth': 3,
+                    'test_size': 0.2,
+                    'plot_forecast': True
+                }
+            },
+            {
+                'algo': 'xgboost',
+                'params': {
+                    'look_back': 20, 
+                    'n_estimators': 150,
+                    'max_depth': 5,
+                    'test_size': 0.2,
+                    'plot_forecast': True
+                }
+            },
+            {
                 'algo': 'lstm',
                 'params': {
                     'look_back': 30, 
