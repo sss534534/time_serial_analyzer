@@ -434,32 +434,38 @@ class StockPricePredictor:
         
         if complex_model:
             # 复杂LSTM模型结构
-            from tensorflow.keras.layers import Bidirectional, GRU, Conv1D, MaxPooling1D, Flatten, Attention
+            from tensorflow.keras.layers import Bidirectional, GRU, Conv1D, MaxPooling1D, Flatten, Attention, Input
+            from tensorflow.keras.models import Model
+            
+            # 使用Functional API构建模型
+            inputs = Input(shape=(X_train.shape[1], 1))
             
             # 1. 添加CNN层提取特征
-            model.add(Conv1D(filters=64, kernel_size=3, activation='relu', input_shape=(X_train.shape[1], 1)))
-            model.add(MaxPooling1D(pool_size=2))
-            model.add(Dropout(0.2))
+            x = Conv1D(filters=64, kernel_size=3, activation='relu')(inputs)
+            x = MaxPooling1D(pool_size=2)(x)
+            x = Dropout(0.2)(x)
             
             # 2. 双向LSTM层
-            model.add(Bidirectional(LSTM(units=100, return_sequences=True)))
-            model.add(Dropout(0.2))
+            x = Bidirectional(LSTM(units=100, return_sequences=True))(x)
+            x = Dropout(0.2)(x)
             
             # 3. 多层LSTM
-            model.add(LSTM(units=150, return_sequences=True))
-            model.add(Dropout(0.2))
-            model.add(LSTM(units=100, return_sequences=True))
-            model.add(Dropout(0.2))
+            x = LSTM(units=150, return_sequences=True)(x)
+            x = Dropout(0.2)(x)
+            x = LSTM(units=100, return_sequences=True)(x)
+            x = Dropout(0.2)(x)
             
-            # 4. 注意力层
-            attention = Attention()
-            model.add(attention)
+            # 4. 注意力层（使用自注意力）
+            attention_output = Attention()([x, x])
             
-            # 5. 全连接层
-            model.add(Dense(units=64, activation='relu'))
-            model.add(Dropout(0.2))
-            model.add(Dense(units=32, activation='relu'))
-            model.add(Dense(units=1))
+            # 5. 展平并添加全连接层
+            x = Flatten()(attention_output)
+            x = Dense(units=64, activation='relu')(x)
+            x = Dropout(0.2)(x)
+            x = Dense(units=32, activation='relu')(x)
+            outputs = Dense(units=1)(x)
+            
+            model = Model(inputs=inputs, outputs=outputs)
         else:
             # 原始LSTM模型结构
             model.add(LSTM(units=50, return_sequences=True, input_shape=(X_train.shape[1], 1)))
@@ -485,11 +491,13 @@ class StockPricePredictor:
         Y_train = scaler.inverse_transform(Y_train.reshape(-1, 1))
         Y_test = scaler.inverse_transform(Y_test.reshape(-1, 1))
         
-        # 计算评估指标
-        metrics = self.calculate_metrics(Y_test, test_predict[:, 0], model_name=f'lstm_{look_back}_{epochs}_{batch_size}')
+        # 计算指标
+        model_suffix = '_complex' if complex_model else ''
+        metrics = self.calculate_metrics(Y_test, test_predict[:, 0], model_name=f'lstm_{look_back}_{epochs}_{batch_size}{model_suffix}')
         
-        # 保存模型
-        model_name = f'lstm_{look_back}_{epochs}_{batch_size}'
+        # 构建模型名称
+        model_suffix = '_complex' if complex_model else ''
+        model_name = f'lstm_{look_back}_{epochs}_{batch_size}{model_suffix}'
         self.models[model_name] = {
             'model': model,
             'scaler': scaler,
@@ -770,6 +778,11 @@ class StockPricePredictor:
             predictions = model.fittedvalues
             y_true = self.data[self.price_column].values
             y_pred = predictions
+            
+            # 确保y_true和y_pred的长度一致
+            min_length = min(len(y_true), len(y_pred))
+            y_true = y_true[-min_length:]
+            y_pred = y_pred[-min_length:]
             
         elif model_name.startswith('lstm') and TENSORFLOW_AVAILABLE:
             # LSTM模型

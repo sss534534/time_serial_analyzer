@@ -849,7 +849,7 @@ class TimeSeriesAnalyzer:
             'model_name': f'ARIMA({order[0]},{order[1]},{order[2]})'
         }
     
-    def lstm_forecast(self, look_back=30, epochs=50, batch_size=32, test_size=0.2, plot_forecast=True):
+    def lstm_forecast(self, look_back=30, epochs=50, batch_size=32, test_size=0.2, plot_forecast=True, complex_model=False):
         """
         使用LSTM模型进行预测
         
@@ -859,6 +859,7 @@ class TimeSeriesAnalyzer:
         batch_size: int - 批量大小
         test_size: float - 测试集比例
         plot_forecast: bool - 是否绘制预测图
+        complex_model: bool - 是否使用复杂LSTM模型结构
         
         返回:
         results: dict - 预测结果和评估指标
@@ -898,12 +899,49 @@ class TimeSeriesAnalyzer:
         
         # 构建LSTM模型
         model = Sequential()
-        model.add(LSTM(units=50, return_sequences=True, input_shape=(X_train.shape[1], 1)))
-        model.add(Dropout(0.2))
-        model.add(LSTM(units=50, return_sequences=False))
-        model.add(Dropout(0.2))
-        model.add(Dense(units=25))
-        model.add(Dense(units=1))
+        
+        if complex_model:
+            # 复杂LSTM模型结构
+            from tensorflow.keras.layers import Bidirectional, GRU, Conv1D, MaxPooling1D, Flatten, Attention, Input
+            from tensorflow.keras.models import Model
+            
+            # 使用Functional API构建模型
+            inputs = Input(shape=(X_train.shape[1], 1))
+            
+            # 1. 添加CNN层提取特征
+            x = Conv1D(filters=64, kernel_size=3, activation='relu')(inputs)
+            x = MaxPooling1D(pool_size=2)(x)
+            x = Dropout(0.2)(x)
+            
+            # 2. 双向LSTM层
+            x = Bidirectional(LSTM(units=100, return_sequences=True))(x)
+            x = Dropout(0.2)(x)
+            
+            # 3. 多层LSTM
+            x = LSTM(units=150, return_sequences=True)(x)
+            x = Dropout(0.2)(x)
+            x = LSTM(units=100, return_sequences=True)(x)
+            x = Dropout(0.2)(x)
+            
+            # 4. 注意力层（使用自注意力）
+            attention_output = Attention()([x, x])
+            
+            # 5. 展平并添加全连接层
+            x = Flatten()(attention_output)
+            x = Dense(units=64, activation='relu')(x)
+            x = Dropout(0.2)(x)
+            x = Dense(units=32, activation='relu')(x)
+            outputs = Dense(units=1)(x)
+            
+            model = Model(inputs=inputs, outputs=outputs)
+        else:
+            # 原始LSTM模型结构
+            model.add(LSTM(units=50, return_sequences=True, input_shape=(X_train.shape[1], 1)))
+            model.add(Dropout(0.2))
+            model.add(LSTM(units=50, return_sequences=False))
+            model.add(Dropout(0.2))
+            model.add(Dense(units=25))
+            model.add(Dense(units=1))
         
         # 编译模型
         model.compile(optimizer=Adam(learning_rate=0.001), loss='mean_squared_error')
@@ -922,11 +960,12 @@ class TimeSeriesAnalyzer:
         Y_test = scaler.inverse_transform(Y_test.reshape(-1, 1))
         
         # 计算评估指标
-        metrics = self.calculate_metrics(Y_test, test_predict[:, 0], model_name=f'lstm_{look_back}_{epochs}_{batch_size}')
+        model_suffix = '_complex' if complex_model else ''
+        metrics = self.calculate_metrics(Y_test, test_predict[:, 0], model_name=f'lstm_{look_back}_{epochs}_{batch_size}{model_suffix}')
         
         # 保存模型
         if TENSORFLOW_AVAILABLE:
-            model_name = f'lstm_{look_back}_{epochs}_{batch_size}'
+            model_name = f'lstm_{look_back}_{epochs}_{batch_size}{model_suffix}'
             self.models[model_name] = {
                 'model': model,
                 'scaler': scaler,
